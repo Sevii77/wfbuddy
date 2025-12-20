@@ -1,0 +1,13 @@
+[package]
+name = "ie"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "model_downloader"
+
+[dependencies]
+regex = "1.12.2"
+fast_image_resize = "5.4"
+ocrs = "0.11"
+rten = {version = "0.22.1", default-features = false}
