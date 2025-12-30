@@ -1,12 +1,22 @@
 use std::sync::{Arc, LazyLock, Mutex};
 
+mod lang;
+pub use lang::Language;
 pub mod util;
 pub mod capture;
-mod logwatcher;
+// mod logwatcher;
+mod iepol;
 mod module;
 mod ui;
 pub use ui::UiExt;
 mod config;
+
+pub type Uniform = Arc<UniformData>;
+pub struct UniformData {
+	pub iepol: iepol::IePol,
+	pub data: data::Data,
+	pub ie: Arc<ie::Ie>,
+}
 
 static CONFIG: LazyLock<Arc<Mutex<config::Config>>> = LazyLock::new(|| Arc::new(Mutex::new(config::Config::load())));
 pub fn config() -> std::sync::MutexGuard<'static, config::Config> {

@@ -5,7 +5,14 @@ use serde::{Deserialize, Serialize};
 #[serde(default)]
 pub struct Config {
 	pub app_id: String,
+	pub theme: ie::Theme,
+	pub client_language: crate::Language,
+	
+	// not used anymore (for now?), the game buffering writing to log could take 10+ sec, making it nearly useless
 	pub log_path: String,
+	pub pol_delay: f32,
+	
+	pub relicreward_valuedforma: bool,
 }
 
 impl Config {
@@ -28,11 +35,19 @@ impl Default for Config {
 		Self {
 			// TODO: check if same on windows
 			app_id: "steam_app_230410".to_string(),
+			theme: ie::Theme {
+				primary: ie::Color::WHITE,
+				secondary: ie::Color::WHITE,
+			},
+			client_language: crate::Language::English,
 			
 			#[cfg(unix)]
 			log_path: dirs::home_dir().unwrap().join(".steam/steam/steamapps/compatdata/230410/pfx/drive_c/users/steamuser/AppData/Local/Warframe/EE.log").to_string_lossy().to_string(),
 			#[cfg(windows)]
-			log_path: dirs::cache_dir().unwrap().join("Local/Warframe/EE.log").to_string_lossy().to_string(),
+			log_path: dirs::cache_dir().unwrap().join("Warframe/EE.log").to_string_lossy().to_string(),
+			pol_delay: 3.0,
+			
+			relicreward_valuedforma: true,
 		}
 	}
 }

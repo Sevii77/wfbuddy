@@ -1,3 +1,4 @@
+pub struct OwnedMask(pub Vec<u8>);
 pub struct Mask<'a>(pub &'a [u8]);
 
 pub struct OwnedImage {
@@ -21,6 +22,35 @@ impl OwnedImage {
 		}
 	}
 	
+	pub fn from_png_mask(bytes: &[u8], alpha_thresshold: u8) -> Result<(Self, OwnedMask), Box<dyn std::error::Error>> {
+		let mut reader = png::Decoder::new(std::io::Cursor::new(bytes));
+		reader.set_transformations(png::Transformations::all());
+		let mut reader = reader.read_info()?;
+		let mut buf = vec![0u8; reader.output_buffer_size().ok_or("Png too big for this systems memory (how tf)")?];
+		let info = reader.next_frame(&mut buf)?;
+		let bytes = &buf[..info.buffer_size()];
+		let height = bytes.len() as usize / info.width as usize / 4;
+		
+		let mut data = Vec::with_capacity(info.width as usize * height);
+		let mut mask = vec![0u8; info.width as usize * height / 8 + 1];
+		
+		for (i, v) in bytes.chunks_exact(4).enumerate() {
+			data.push(Color::new(v[0], v[1], v[2]));
+			if v[3] >= alpha_thresshold {
+				mask[i / 8] |= 1 << (i % 8);
+			}
+		}
+		
+		Ok((
+			Self {
+				width: info.width,
+				height: height as u32,
+				data
+			},
+			OwnedMask(mask),
+		))
+	}
+	
 	pub fn resize_h(&mut self, height: u32) {
 		if self.height == height {return}
 		println!("resizing");
@@ -36,6 +66,18 @@ impl OwnedImage {
 			width,
 			height,
 			data: unsafe{std::mem::transmute(dst.into_vec())},
+		}
+	}
+	
+	#[inline]
+	pub fn resized_h(mut self, height: u32) -> Self {
+		self.resize_h(height);
+		self
+	}
+	
+	pub fn map_pixels(&mut self, f: impl Fn(&mut Color)) {
+		for v in &mut self.data {
+			f(v);
 		}
 	}
 	
@@ -75,6 +117,26 @@ impl<'a> Image<'a> {
 		self.y2 - self.y1
 	}
 	
+	#[inline(always)]
+	fn pixel(&self, x: u32, y: u32) -> &Color {
+		&self.data[(x + y * self.true_width) as usize]
+	}
+	
+	pub fn to_owned_image(self) -> OwnedImage {
+		let mut data = Vec::with_capacity((self.width() * self.height()) as usize);
+		for y in self.y1..self.y2 {
+			for x in self.x1..self.x2 {
+				data.push(*self.pixel(x, y));
+			}
+		}
+		
+		OwnedImage {
+			width: self.width(),
+			height: self.height(),
+			data,
+		}
+	}
+	
 	pub fn get_bytes(&self) -> Vec<u8> {
 		let mut bytes = vec![0; (self.width() * self.height() * 3) as usize];
 		let mut i = 0;
@@ -91,29 +153,16 @@ impl<'a> Image<'a> {
 		bytes
 	}
 	
-	pub fn color_threshold(&self, color: Color, threshold: f32) -> OwnedImage {
-		let mut data = Vec::with_capacity((self.width() * self.height()) as usize);
-		for y in self.y1..self.y2 {
-			for x in self.x1..self.x2 {
-				let clr = self.pixel(x, y);
-				if clr.deviation(color) <= threshold {
-					data.push(color);
-				} else {
-					data.push(Color::new(0, 0, 0));
-				}
-			}
-		}
+	pub fn save_png<P: AsRef<std::path::Path>>(&self, path: P) -> Result<(), Box<dyn std::error::Error>> {
+		let f = std::fs::File::create(path)?;
+		let mut e = png::Encoder::new(std::io::BufWriter::new(f), self.x2 - self.x1, self.y2 - self.y1);
+		e.set_color(png::ColorType::Rgb);
+		e.set_depth(png::BitDepth::Eight);
+		let mut w = e.write_header()?;
+		// w.write_image_data(unsafe{std::slice::from_raw_parts(self.data[..].as_ptr() as *const _, self.data.len() * 3)})?;
+		w.write_image_data(&self.get_bytes())?;
 		
-		OwnedImage {
-			width: self.width(),
-			height: self.height(),
-			data,
-		}
-	}
-	
-	#[inline(always)]
-	fn pixel(&self, x: u32, y: u32) -> &Color {
-		&self.data[(x + y * self.true_width) as usize]
+		Ok(())
 	}
 	
 	/// Gets a subimage with the same height and provided width aligned to the left with the right side trimmed
@@ -244,25 +293,28 @@ impl<'a> Image<'a> {
 		}
 	}
 	
-	pub fn averate_color_masked(&self, mask: &Mask) -> Color {
+	pub fn average_color_masked(&self, mask: Mask) -> Color {
 		let mut count = 0;
 		let mut r = 0u32;
 		let mut g = 0u32;
 		let mut b = 0u32;
-		
 		let mut i = 0;
 		for x in self.x1..self.x2 {
 			for y in self.y1..self.y2 {
-				let clr = self.pixel(x, y);
 				let yes = ((mask.0[i / 8] >> (i % 8)) & 1) == 1;
 				i += 1;
 				if !yes {continue}
 				
-				count += 1;
+				let clr = self.pixel(x, y);
 				r += clr.r as u32;
 				g += clr.g as u32;
 				b += clr.b as u32;
+				count += 1;
 			}
+		}
+		
+		if count == 0 {
+			return Color::BLACK;
 		}
 		
 		Color {
@@ -272,14 +324,50 @@ impl<'a> Image<'a> {
 		}
 	}
 	
-	pub fn get_text(&self) -> String {
-		crate::OCR.get_text(self)
+	pub fn average_deviation_masked(&self, other: Image, mask: Mask) -> f32 {
+		if self.x2 - self.x1 != other.x2 - other.x1 {return f32::MAX};
+		if self.y2 - self.y1 != other.y2 - other.y1 {return f32::MAX};
+		
+		let mut count = 0;
+		let mut deviation = 0.0;
+		let mut i = 0;
+		for x in 0..self.x2 - self.x1 {
+			for y in 0..self.y2 - self.y1 {
+				let yes = ((mask.0[i / 8] >> (i % 8)) & 1) == 1;
+				i += 1;
+				if !yes {continue}
+				
+				deviation += self.pixel(self.x1 + x, self.y1 + y).deviation(*other.pixel(other.x1 + x, other.y1 + y));
+				count += 1;
+			}
+		}
+		
+		if count == 0 {
+			return 0.0;
+		}
+		
+		deviation / count as f32
+	}
+	
+	pub fn get_text(&self, theme: crate::Theme, ocr: &crate::ocr::Ocr) -> String {
+		let mut image = self.to_owned_image();
+		image.map_pixels(|v| *v = if v.deviation(theme.primary) < 5.0 || v.deviation(theme.secondary) < 5.0 {Color::WHITE} else {Color::BLACK});
+		
+		let text = ocr.get_text(image.as_image());
+		println!("get text: {text}");
+		if std::env::var("WFBUDDY_WRITE_IMAGE") == Ok("1".to_string()) {
+			let mut n = text.clone();
+			n.retain(|v| v.is_ascii_alphanumeric());
+			image.as_image().save_png(format!("./test_{n}.png")).unwrap();
+		}
+		
+		text
 	}
 }
 
 // ----------
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[repr(C)]
 pub struct Color {
 	pub r: u8,
@@ -288,13 +376,17 @@ pub struct Color {
 }
 
 impl Color {
+	pub const WHITE: Self = Self::new(255, 255, 255);
+	pub const BLACK: Self = Self::new(0, 0, 0);
+	
+	#[inline]
 	pub const fn new(r: u8, g: u8, b: u8) -> Self {
 		Self{r, g, b}
 	}
 	
 	pub fn deviation(&self, other: Color) -> f32 {
-		(self.r as f32 - other.r as f32).abs() / 255.0 / 3.0 +
+		(((self.r as f32 - other.r as f32).abs() / 255.0 / 3.0 +
 		(self.g as f32 - other.g as f32).abs() / 255.0 / 3.0 +
-		(self.b as f32 - other.b as f32).abs() / 255.0 / 3.0
+		(self.b as f32 - other.b as f32).abs() / 255.0 / 3.0) / 0.05).powi(3)
 	}
 }

@@ -4,16 +4,26 @@ pub fn ui(ui: &mut egui::Ui, modules: &mut [Box<dyn crate::module::Module>]) {
 	let mut config = crate::config();
 	let mut changed = false;
 	
+	if ui.button("Set Theme (Open the settings menu in Warframe with the submenu set to keyboard/mouse). Requires you to restart WFBuddy").clicked() {
+		if let Some(image) = crate::capture::capture_specific(&config.app_id) {
+			config.theme = ie::Theme::from_options(image.as_image());
+			changed = true;
+			println!("new theme: {:?}", config.theme);
+		}
+	}
+	
 	changed |= ui.combo_cached(&mut config.app_id, "Warframe Window ID", || {
 		println!("fetching windows!");
 		xcap::Window::all().unwrap().into_iter().filter_map(|v| v.app_name().ok()).collect()
 	});
 	
-	changed |= ui.text_edit_singleline(&mut config.log_path).changed();
+	// changed |= ui.text_edit_singleline(&mut config.log_path).changed();
+	
+	changed |= ui.num_edit_range(&mut config.pol_delay, "Screenshot polling delay", 0.5..=30.0).changed();
 	
 	for module in modules {
 		ui.spacer();
-		changed |= module.ui_settings(ui);
+		changed |= module.ui_settings(ui, &mut config);
 	}
 	
 	if changed {

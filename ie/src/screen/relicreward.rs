@@ -1,4 +1,10 @@
-use crate::{Color, Image, Mask};
+use std::sync::LazyLock;
+use crate::{Image, Mask, OwnedImage, OwnedMask, Theme};
+
+pub struct Rewards {
+	pub timer: u32,
+	pub rewards: Vec<Reward>,
+}
 
 pub struct Reward {
 	pub name: String,
@@ -6,17 +12,20 @@ pub struct Reward {
 }
 
 /// Expects an image with a height of 1080
-pub fn get_rewards(image: Image) -> Vec<Reward> {
+pub(crate) fn get_rewards(image: Image, theme: Theme, ocr: &crate::ocr::Ocr) -> Rewards {
 	const CRAFTED_AREA_SIZE: u32 = 32;
 	const NAME_AREA_SIZE: u32 = 70;
-	const OWNED_REGEX: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"(?<amount>\d+)?\s*(?:Owned|Crafted)").unwrap());
+	const TIMER_Y: u32 = 135;
+	const TIMER_W: u32 = 64;
+	const TIMER_H: u32 = 64;
+	const OWNED_REGEX: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"(?<amount>\d+)?\s*(?:Owned|Crafted)").unwrap());
 	
-	get_reward_subimages(image)
+	let rewards = get_reward_subimages(image)
 		.into_iter()
 		.map(|image| Reward {
-			name: image.trimmed_bottom(NAME_AREA_SIZE).get_text(),
+			name: image.trimmed_bottom(NAME_AREA_SIZE).get_text(theme, ocr),
 			owned: OWNED_REGEX
-				.captures(&image.trimmed_top(CRAFTED_AREA_SIZE).get_text())
+				.captures(&image.trimmed_top(CRAFTED_AREA_SIZE).get_text(theme, ocr))
 				.map(|v| v
 					.name("amount")
 					.map(|v| v.as_str().parse::<u32>().ok())
@@ -24,14 +33,25 @@ pub fn get_rewards(image: Image) -> Vec<Reward> {
 					.unwrap_or(1))
 				.unwrap_or(0),
 		})
-		.collect()
+		.collect();
+	
+	let timer = crate::util::DIGIT_REGEX
+		.captures(&image
+			.trimmed_centerh(TIMER_W)
+			.sub_image(0, TIMER_Y, TIMER_W, TIMER_H)
+			.get_text(Theme::WHITE, ocr))
+		.map(|v| v
+			.name("digits")
+			.map(|v| v.as_str().parse::<u32>().ok())
+			.flatten())
+		.flatten()
+		.unwrap_or(10);
+	
+	Rewards{timer, rewards}
 }
 
 /// Expects an image with a height of 1080
-pub fn get_selected(image: Image) -> u32 {
-	const REWARDS_TEXT_OFFSET: u32 = 348;
-	
-	let theme = crate::theme::from_party_header_text(image, REWARDS_TEXT_OFFSET);
+pub(crate) fn get_selected(image: Image, theme: Theme) -> u32 {
 	let rewards = get_reward_subimages(image);
 	
 	let mut picked = 0;
@@ -68,88 +88,31 @@ fn get_reward_subimages<'a>(image: Image<'a>) -> Vec<Image<'a>> {
 	images
 }
 
-const RARITY_ICON_SIZE: u32 = 16;
-
-const COLOR_COMMON: Color = Color::new(190, 141, 121);
-const MASK_COMMON: Mask = Mask(&[
-	0b00000000, 0b00000000,
-	0b00000000, 0b00000000,
-	0b00000001, 0b00000000,
-	0b00000011, 0b00000000,
-	0b00000111, 0b00000000,
-	0b00001111, 0b00000000,
-	0b00011111, 0b00000000,
-	0b00011111, 0b00000000,
-	0b00011111, 0b00000000,
-	0b00011111, 0b00000000,
-	0b00011111, 0b00000000,
-	0b00001111, 0b00000000,
-	0b00000111, 0b00000000,
-	0b00000011, 0b00000000,
-	0b00000001, 0b00000000,
-	0b00000000, 0b00000000,
-]);
-
-const COLOR_UNCOMMON: Color = Color::new(207, 207, 207);
-const MASK_UNCOMMON: Mask = Mask(&[
-	0b00000011, 0b00000000,
-	0b00000011, 0b00000000,
-	0b00000011, 0b00000000,
-	0b00000111, 0b00000000,
-	0b00000111, 0b00000000,
-	0b00001111, 0b00000000,
-	0b00001111, 0b00000000,
-	0b00001111, 0b00000000,
-	0b00001111, 0b00000000,
-	0b00001111, 0b00000000,
-	0b10000111, 0b00000001,
-	0b10000111, 0b00000001,
-	0b00000011, 0b00000000,
-	0b00000011, 0b00000000,
-	0b00000011, 0b00000000,
-	0b00000001, 0b00000000,
-]);
-
-const COLOR_RARE: Color = Color::new(231, 211, 140);
-const MASK_RARE: Mask = Mask(&[
-	0b00000110, 0b00000000,
-	0b00000110, 0b00000000,
-	0b00000110, 0b00000001,
-	0b10001110, 0b00000001,
-	0b10001110, 0b00000001,
-	0b10001110, 0b00000001,
-	0b00001110, 0b00000000,
-	0b00001110, 0b00000000,
-	0b00001110, 0b00000000,
-	0b00000110, 0b00000000,
-	0b00000110, 0b00000000,
-	0b00000110, 0b00000000,
-	0b00000010, 0b00000000,
-	0b00000010, 0b00000000,
-	0b00000000, 0b00000000,
-	0b00000000, 0b00000000,
-]);
+static ICON_COMMON: LazyLock<(OwnedImage, OwnedMask)> = LazyLock::new(|| {println!("1"); crate::OwnedImage::from_png_mask(include_bytes!("../asset/icon_common.png"), 250).unwrap()});
+static ICON_UNCOMMON: LazyLock<(OwnedImage, OwnedMask)> = LazyLock::new(|| {println!("2"); crate::OwnedImage::from_png_mask(include_bytes!("../asset/icon_uncommon.png"), 250).unwrap()});
+static ICON_RARE: LazyLock<(OwnedImage, OwnedMask)> = LazyLock::new(|| {println!("3"); crate::OwnedImage::from_png_mask(include_bytes!("../asset/icon_rare.png"), 250).unwrap()});
 
 // Gets the amount of rewards there are, not always equal to the amount of people
 // in the party if someone forgot to select a relic.
-// the log does contain `ProjectionRewardChoice.lua: Missing icon data!` that seems to match the amount
-// of rewards after a quick glance but seems unreliable (maybe investigate more in the future?)
 fn reward_count(image: Image) -> u32 {
 	const REWARDS_AREA_WIDTH: u32 = 962;
 	const RARITY_ICON_OFFSET: u32 = 242;
-	const RARITY_ICON_Y: u32 = 471;
-	const RARITY_ICON_EVEN_OFFSET_START: u32 = 111;
+	const RARITY_ICON_Y: u32 = 459;
+	const RARITY_ICON_SIZE: u32 = 40;
 	
 	let image = image.trimmed_centerh(REWARDS_AREA_WIDTH);
 	
 	fn check_icon(image: Image, x: u32) -> bool {
-		for (mask, color) in &[(MASK_COMMON, COLOR_COMMON), (MASK_UNCOMMON, COLOR_UNCOMMON), (MASK_RARE, COLOR_RARE)] {
-			for jitter in -1..=1 { // sub pixel shenenigans
-				let sub = image.sub_image((x as isize + jitter) as u32, RARITY_ICON_Y, RARITY_ICON_SIZE, RARITY_ICON_SIZE);
-				let deviation = sub.averate_color_masked(mask).deviation(*color);
-				println!("icon check deviation was {deviation}");
-				if deviation <= 0.2 {
-					return true;
+		for icon in [&ICON_COMMON, &ICON_UNCOMMON, &ICON_RARE] {
+			for jitter_y in -1..=1 { // sub pixel shenenigans
+				for jitter_x in -1..=1 {
+					let sub = image.sub_image((x as isize + jitter_x) as u32, (RARITY_ICON_Y as i32 + jitter_y) as u32, RARITY_ICON_SIZE, RARITY_ICON_SIZE);
+					// let deviation = sub.average_color_masked(Mask(&icon.1.0)).deviation(icon.0.as_image().average_color_masked(Mask(&icon.1.0)));
+					let deviation = sub.average_deviation_masked(icon.0.as_image(), Mask(&icon.1.0));
+					println!("icon check deviation was {deviation}");
+					if deviation <= 25.0 {
+						return true;
+					}
 				}
 			}
 		}
@@ -157,8 +120,10 @@ fn reward_count(image: Image) -> u32 {
 		false
 	}
 	
+	println!("odd");
 	let is_odd = check_icon(image, REWARDS_AREA_WIDTH / 2 - RARITY_ICON_SIZE / 2);
-	let is_many = check_icon(image, REWARDS_AREA_WIDTH / 2 + RARITY_ICON_OFFSET + if is_odd {0} else {RARITY_ICON_EVEN_OFFSET_START} - RARITY_ICON_SIZE / 2);
+	println!("many");
+	let is_many = check_icon(image, REWARDS_AREA_WIDTH / 2 + RARITY_ICON_OFFSET + if is_odd {0} else {RARITY_ICON_OFFSET / 2} - RARITY_ICON_SIZE / 2);
 	match (is_odd, is_many) {
 		(true, false) => 1,
 		(false, false) => 2,

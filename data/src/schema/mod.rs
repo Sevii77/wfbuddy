@@ -1,2 +1,2 @@
-pub mod filtered_items;
-pub mod prices;
+pub mod items;
+pub mod ducats;

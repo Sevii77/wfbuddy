@@ -2,9 +2,6 @@ use std::collections::{HashMap, HashSet};
 
 mod schema;
 
-const FILTERED_ITEMS_URL: &str = "https://api.warframestat.us/wfinfo/filtered_items/";
-const PRICES_URL: &str = "https://api.warframestat.us/wfinfo/prices/";
-
 #[derive(Debug)]
 pub struct Data {
 	pub platinum_values: HashMap<String, f32>,
@@ -15,60 +12,59 @@ pub struct Data {
 
 impl Data {
 	pub fn populated() -> Self {
-		let filtered = ureq::get(FILTERED_ITEMS_URL)
+		let items = ureq::get(schema::items::URL)
 			.call()
 			.unwrap()
 			.body_mut()
-			.read_json::<schema::filtered_items::FilteredItems>()
+			.read_json::<schema::items::Items>()
 			.unwrap();
 		
-		let prices = ureq::get(PRICES_URL)
+		let ducats = ureq::get(schema::ducats::URL)
 			.call()
 			.unwrap()
 			.body_mut()
-			.read_json::<schema::prices::Prices>()
+			.read_json::<schema::ducats::Ducats>()
 			.unwrap();
 		
-		fn fix_relic_reward_name(s: &str) -> String {
-			s.trim_end_matches("Blueprint").trim().to_owned()
-		}
+		let name_map = items.data
+			.iter()
+			.map(|v| (v.id.clone(), v.i18n.en.name.clone()))
+			.collect::<HashMap<_, _>>();
 		
 		let mut s = Self {
-			platinum_values: prices.0
+			platinum_values: ducats.payload.previous_hour
 				.iter()
-				.map(|v| (fix_relic_reward_name(&v.name), v.custom_avg))
+				.map(|v| (name_map[&v.item].clone(), v.wa_price))
 				.collect(),
 			
-			ducat_values: filtered.sets
+			ducat_values: ducats.payload.previous_hour
 				.iter()
-				.flat_map(|(_, v)| &v.parts)
-				.map(|(name, v)| (fix_relic_reward_name(name), v.ducats))
+				.map(|v| (name_map[&v.item].clone(), v.ducats))
 				.collect(),
 			
-			relic_items: filtered.sets
+			relic_items: ducats.payload.previous_hour
 				.iter()
-				.flat_map(|(_, v)| &v.parts)
-				.map(|(name, _)| fix_relic_reward_name(name))
+				.map(|v| name_map[&v.item].clone())
 				.collect(),
 			
-			vaulted_items: filtered.sets
-				.iter()
-				.flat_map(|(_, v)| &v.parts)
-				.filter_map(|(name, v)| if v.vaulted {Some(fix_relic_reward_name(name))} else {None})
-				.collect(),
+			vaulted_items: HashSet::new(), //TODO
+			// vaulted_items: items.data
+			// 	.iter()
+			// 	.filter_map(|v| if v. {Some(fix_relic_reward_name(name))} else {None})
+			// 	.collect(),
 		};
 		
-		s.platinum_values.insert("Forma".to_string(), (350.0f32 / 3.0).floor() * 0.1);
-		s.relic_items.insert("Forma".to_string());
-		s.platinum_values.insert("2 X Forma".to_string(), (350.0f32 / 3.0).floor() * 0.2);
-		s.relic_items.insert("2 X Forma".to_string());
+		s.platinum_values.insert("Forma Blueprint".to_string(), (350.0f32 / 3.0).floor() * 0.1);
+		s.relic_items.insert("Forma Blueprint".to_string());
+		s.platinum_values.insert("2 X Forma Blueprint".to_string(), (350.0f32 / 3.0).floor() * 0.2);
+		s.relic_items.insert("2 X Forma Blueprint".to_string());
 		
 		s
 	}
 	
 	/// Attempts to find the closest item name from a dirty ocr string
 	pub fn find_item_name(&self, name: &str) -> String {
-		let name = name.trim_end_matches(" Blueprint").trim();
+		let name = name.trim_ascii();
 		if self.relic_items.contains(name) {
 			return name.to_owned()
 		}

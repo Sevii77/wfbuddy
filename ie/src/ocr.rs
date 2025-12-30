@@ -1,33 +1,29 @@
-use std::sync::LazyLock;
-
-pub static OCR: LazyLock<Ocr> = LazyLock::new(|| Ocr::new());
+use std::path::Path;
 
 pub struct Ocr {
-	engine: ocrs::OcrEngine,
+	engine: ocr_rs::OcrEngine,
 }
 
 impl Ocr {
-	fn new() -> Self {
-		let detection = include_bytes!("../detection.rten");
-		let recognition = include_bytes!("../recognition.rten");
-		
-		let engine = ocrs::OcrEngine::new(ocrs::OcrEngineParams {
-			detection_model: Some(rten::Model::load_static_slice(detection).unwrap()),
-			recognition_model: Some(rten::Model::load_static_slice(recognition).unwrap()),
+	pub fn new(detection: impl AsRef<Path>, recognition: impl AsRef<Path>, charsset: impl AsRef<Path>) -> Self {
+		let engine = ocr_rs::OcrEngine::new(detection, recognition, charsset, Some(ocr_rs::OcrEngineConfig {
+			backend: ocr_rs::Backend::CPU,
+			thread_count: 1,
+			precision_mode: ocr_rs::PrecisionMode::Low,
+			enable_parallel: false,
+			min_result_confidence: 0.5,
 			..Default::default()
-		}).unwrap();
+		})).unwrap();
 		
 		Self{engine}
 	}
 	
-	pub fn get_text(&self, image: &crate::Image) -> String {
-		let data = image.get_bytes();
-		let img = ocrs::ImageSource::from_bytes(&data, (image.width(), image.height())).unwrap();
-		let input = self.engine.prepare_input(img).unwrap();
-		self.engine.get_text(&input).unwrap()
-			.split("\n")
+	pub fn get_text(&self, image: crate::Image) -> String {
+		let image = ocr_rs::preprocess::rgb_to_image(&image.get_bytes(), image.width(), image.height());
+		self.engine.recognize(&image)
+			.unwrap()
 			.into_iter()
-			.filter(|v| v.len() > 1)
+			.map(|v| v.text)
 			.collect::<Vec<_>>()
 			.join(" ")
 	}

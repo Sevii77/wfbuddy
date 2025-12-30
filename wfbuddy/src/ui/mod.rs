@@ -1,4 +1,4 @@
-use crate::{logwatcher::{LogWatcher, LogWatcherStatus}, module::{self, Module}};
+use crate::{iepol::IePol, module::{self, Module}};
 
 mod ext;
 pub use ext::UiExt;
@@ -6,35 +6,32 @@ mod settings;
 
 pub struct WFBuddy {
 	modules: Vec<Box<dyn Module>>,
-	watcher: LogWatcher,
+	uniform: crate::Uniform,
 	tab: &'static str,
 }
 
 impl WFBuddy {
 	pub fn new(_cc: &eframe::CreationContext) -> Self {
-		let data = std::sync::Arc::new(data::Data::populated());
-		let watcher = LogWatcher::watch(&crate::config().log_path).unwrap();
+		let lang = crate::config().client_language.ocr_code();
+		let ie = std::sync::Arc::new(ie::Ie::new(crate::config().theme, "ocr/detection.mnn", format!("ocr/{lang}_recognition.mnn"), format!("ocr/{lang}_charset.txt")));
+		let uniform = std::sync::Arc::new(crate::UniformData {
+			iepol: IePol::new(ie.clone()),
+			data: data::Data::populated(),
+			ie,
+		});
 		
 		Self {
 			modules: vec![
-				Box::new(module::RelicReward::new(&watcher, data.clone())),
+				Box::new(module::RelicReward::new(uniform.clone())),
+				Box::new(module::Debug::new(uniform.clone())),
 			],
-			watcher,
+			uniform,
 			tab: "Home",
 		}
 	}
 	
 	fn ui(&mut self, ui: &mut egui::Ui) {
-		match self.watcher.status() {
-			LogWatcherStatus::Watching =>
-				_ = ui.label("Logwatcher: Active"),
-			
-			LogWatcherStatus::Stopped =>
-				_ = ui.label("Logwatcher: Stopped"),
-			
-			LogWatcherStatus::Failed(error) =>
-				_ = ui.label(format!("Logwatcher: Error {error:#?}")),
-		}
+		ui.label(format!("Seconds till next poll: {}", self.uniform.iepol.secs_till_next_poll()));
 		
 		ui.horizontal(|ui| {
 			if ui.selectable_label(self.tab == "Home", "Home").clicked() {

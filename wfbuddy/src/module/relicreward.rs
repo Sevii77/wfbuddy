@@ -1,44 +1,57 @@
 use std::{collections::BTreeMap, time::{Duration, Instant}};
-use crate::{logwatcher::{EventReceiver, LogWatcher}, UiExt};
-
-// const MAX_TIMER_DELAY_MS: u64 = 100;
-// const PRE_REWARDS_CHECK_S: f32 = 1.0;
-const CHECK_SELECTED_TIMER_MS: u64 = 14000;
-
-// 6728.482 Script [Info]: ProjectionRewardChoice.lua: Got rewards
-// 6728.483 Script [Info]: ProjectionsCountdown.lua: Initialize timer nil    15
+use crate::{UiExt, iepol::{EventReceiver, IePolWatchType}};
 
 pub struct RelicReward {
-	data: std::sync::Arc<data::Data>,
+	uniform: crate::Uniform,
 	
 	rewards_rs: EventReceiver,
-	// timer_rs: EventReceiver,
-	// last_rewards: Instant,
-	check_selected: Option<Instant>,
 	
 	current_rewards: Vec<Reward>,
 	selected_rewards: BTreeMap<String, u32>,
 }
 
 impl RelicReward {
-	pub fn new(watcher: &LogWatcher, data: std::sync::Arc<data::Data>) -> Self {
+	pub fn new(uniform: crate::Uniform) -> Self {
 		let (tx, rewards_rs) = std::sync::mpsc::channel();
-		watcher.watch_event(regex::Regex::new(r"ProjectionRewardChoice\.lua: Got rewards$").unwrap(), tx);
-		
-		// let (tx, timer_rs) = std::sync::mpsc::channel();
-		// watcher.watch_event(regex::Regex::new(r"ProjectionsCountdown\.lua: Initialize timer.+ (?<delay>\d+)$").unwrap(), tx);
+		// TODO: identifier + locale files or smth for multi language support
+		uniform.iepol.watch_event(IePolWatchType::PartyHeaderText("void fissure/rewards".to_string()), tx);
 		
 		Self {
-			data,
+			uniform,
 			
 			rewards_rs,
-			// timer_rs,
-			// last_rewards: Instant::now(),
-			check_selected: None,
 			
 			current_rewards: Vec::new(),
 			selected_rewards: BTreeMap::new(),
 		}
+	}
+	
+	fn check_rewards(&mut self, rewards: ie::screen::relicreward::Rewards) {
+		self.current_rewards = rewards.rewards
+			.into_iter()
+			.map(|reward| {
+				let name = self.uniform.data.find_item_name(&reward.name);
+				Reward {
+					vaulted: self.uniform.data.vaulted_items.contains(&name),
+					platinum: self.uniform.data.platinum_values.get(&name).map(|v| *v).unwrap_or_default(),
+					ducats: self.uniform.data.ducat_values.get(&name).map(|v| *v).unwrap_or_default(),
+					owned: reward.owned,
+					name,
+				}
+			})
+			.collect::<Vec<_>>();
+		println!("timer is {}", rewards.timer);
+		self.uniform.iepol.delay_till(Instant::now() + Duration::from_secs(rewards.timer as u64 - 1));
+	}
+	
+	fn check_selected(&mut self, image: std::sync::Arc<ie::OwnedImage>) {
+		let selected = self.uniform.ie.relicreward_get_selected(image.as_image());
+		if let Some(reward) = self.current_rewards.get(selected as usize) {
+			println!("incrementing {} as the picked index was {selected}", reward.name);
+			*self.selected_rewards.entry(reward.name.clone()).or_insert(0) += 1;
+		}
+		
+		self.current_rewards.clear();
 	}
 }
 
@@ -48,14 +61,25 @@ impl super::Module for RelicReward {
 	}
 	
 	fn ui(&mut self, ui: &mut egui::Ui) {
+		ui.horizontal(|ui| {
+			if ui.button("Check").clicked() {
+				let Some(image) = crate::capture::capture() else {return};
+				let rewards = self.uniform.ie.relicreward_get_rewards(image.as_image());
+				self.check_rewards(rewards);
+			}
+			
+			if ui.button("Selected").clicked() {
+				let Some(image) = crate::capture::capture() else {return};
+				self.check_selected(std::sync::Arc::new(image));
+			}
+		});
+		
 		self.ui_important(ui);
 	}
 	
-	fn ui_settings(&mut self, ui: &mut egui::Ui) -> bool {
+	fn ui_settings(&mut self, ui: &mut egui::Ui, config: &mut crate::config::Config) -> bool {
 		ui.label("Relic Rewards");
-		ui.label("TODO");
-		
-		false
+		ui.checkbox(&mut config.relicreward_valuedforma, "Forma has value").clicked()
 	}
 	
 	fn ui_important(&mut self, ui: &mut egui::Ui) -> bool {
@@ -67,7 +91,8 @@ impl super::Module for RelicReward {
 			for (i, ui) in uis.into_iter().enumerate() {
 				let reward = &self.current_rewards[i];
 				ui.label(&reward.name);
-				ui.label(format!("Platinum: {}", reward.platinum));
+				let plat = if !reward.name.contains("Forma Blueprint") || crate::config().relicreward_valuedforma {reward.platinum} else {0.0};
+				ui.label(format!("Platinum: {}", plat));
 				ui.label(format!("Ducats: {}", reward.ducats));
 				
 				if reward.owned > 0 {
@@ -104,57 +129,14 @@ impl super::Module for RelicReward {
 	}
 	
 	fn tick(&mut self) {
-		// TODO: seperate thread mby so it doesnt block
-		'rewards: {
-			let Ok((timestamp, _cap)) = self.rewards_rs.try_recv() else {break 'rewards};
-			println!("- checking rewards");
-			
-			let Some(mut img) = crate::capture::capture() else {break 'rewards};
-			img.resize_h(1080);
-			
-			self.current_rewards = ie::screen::relicreward::get_rewards(img.as_image())
-				.into_iter()
-				.map(|reward| {
-					let name = self.data.find_item_name(&reward.name);
-					Reward {
-						vaulted: self.data.vaulted_items.contains(&name),
-						platinum: self.data.platinum_values.get(&name).map(|v| *v).unwrap_or_default(),
-						ducats: self.data.ducat_values.get(&name).map(|v| *v).unwrap_or_default(),
-						owned: reward.owned,
-						name,
-					}
-				})
-				.collect::<Vec<_>>();
-			
-			// self.last_rewards = timestamp;
-			self.check_selected = Some(timestamp + Duration::from_millis(CHECK_SELECTED_TIMER_MS));
-		}
+		let Ok(image) = self.rewards_rs.try_recv() else {return};
 		
-		// 'timer: {
-		// 	let Ok((timestamp, cap)) = self.timer_rs.try_recv() else {break 'timer};
-		// 	if timestamp.duration_since(self.last_rewards) > Duration::from_millis(MAX_TIMER_DELAY_MS) {break 'timer}
-		// 	if self.check_selected.is_some() {break 'timer}
-		// 	let Some(delay) = cap.name("delay") else {break 'timer};
-		// 	let Ok(delay) = delay.parse::<f32>() else {break 'timer};
-		// 	println!("- timer for {delay} seconds");
-		// 	self.check_selected = Some(self.last_rewards + Duration::from_secs_f32(delay - PRE_REWARDS_CHECK_S));
-		// }
-		
-		'selected: {
-			let Some(timestamp) = self.check_selected else {break 'selected};
-			if timestamp > Instant::now() {break 'selected}
-			println!("- checking selected");
-			
-			self.check_selected = None;
-			
-			let Some(mut img) = crate::capture::capture() else {break 'selected};
-			img.resize_h(1080);
-			
-			let selected = ie::screen::relicreward::get_selected(img.as_image());
-			let Some(reward) = self.current_rewards.get(selected as usize) else {break 'selected};
-			println!("incrementing {} as the picked index was {selected}", reward.name);
-			*self.selected_rewards.entry(reward.name.clone()).or_insert(0) += 1;
-			self.current_rewards.clear();
+		println!("- checking rewards");
+		let rewards = self.uniform.ie.relicreward_get_rewards(image.as_image());
+		if rewards.timer >= 3 {
+			self.check_rewards(rewards);
+		} else {
+			self.check_selected(image);
 		}
 	}
 }

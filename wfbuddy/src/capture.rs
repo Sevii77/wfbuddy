@@ -8,9 +8,12 @@ pub fn capture_specific(window_id: &str) -> Option<ie::OwnedImage> {
 		.find_map(|(name, window)| if name == window_id {Some(window)} else {None})?;
 	
 	let img = window.capture_image().ok()?;
-	Some(ie::OwnedImage::from_rgba(img.width() as usize, img.as_bytes()))
+	let mut img = ie::OwnedImage::from_rgba(img.width() as usize, img.as_bytes());
+	img.resize_h(1080);
+	Some(img)
 }
 
+/// Reads the config and captures the selected window, will deadlock if a handle to the config already exists
 pub fn capture() -> Option<ie::OwnedImage> {
 	// capture_specific("steam_app_230410")
 	// capture_specific("gwenview")
